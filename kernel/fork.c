@@ -1315,6 +1315,7 @@ static inline void __mmput(struct mm_struct *mm)
 	khugepaged_exit(mm); /* must run before exit_mmap */
 	exit_mmap(mm);
 	simple_lmk_mm_freed(mm);
+	erase_exiting_mm(mm);
 	mm_put_huge_zero_page(mm);
 	set_mm_exe_file(mm, NULL);
 	put_dmabuf_info(mm->abi_extend->dmabuf_info);
@@ -1623,6 +1624,7 @@ static void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 
 void exit_mm_release(struct task_struct *tsk, struct mm_struct *mm)
 {
+	store_exiting_mm(tsk, mm);
 	futex_exit_release(tsk);
 	mm_release(tsk, mm);
 }
