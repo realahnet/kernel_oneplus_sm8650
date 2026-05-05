@@ -871,7 +871,7 @@ bool update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		/* previous vlag < 0 otherwise se would not be delayed */
 		vlag = max(vlag, se->vlag);
 		if (sched_feat(DELAY_ZERO))
-			vlag = min(vlag, 0);
+			vlag = min_t(s64, vlag, 0);
 	}
 	ret = (vlag == se->vlag);
 	se->vlag = vlag;
@@ -1131,7 +1131,7 @@ static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq, bool protect)
 	/*
 	 * Picking the ->next buddy will affect latency but not fairness.
 	 */
-	if (sched_feat(PICK_BUDDY) &&
+	if (sched_feat(PICK_BUDDY) && protect &&
 	    cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next)) {
 		/* ->next will never be delayed */
 		SCHED_WARN_ON(cfs_rq->next->sched_delayed);
@@ -4869,11 +4869,10 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 		detach_entity_load_avg(cfs_rq, se);
 		update_tg_load_avg(cfs_rq);
 	} else if (decayed) {
-		cfs_rq_util_change(cfs_rq, 0);
-
 		if (flags & UPDATE_TG)
 			update_tg_load_avg(cfs_rq);
 	}
+	cfs_rq_util_change(cfs_rq, 0);
 }
 
 /*
@@ -8932,8 +8931,10 @@ pick:
 	return;
 
 preempt:
-	if (preempt_action == PREEMPT_WAKEUP_SHORT)
+	if (preempt_action == PREEMPT_WAKEUP_SHORT) {
 		cancel_protect_slice(se);
+		clear_buddies(cfs_rq, se);
+	}
 
 	resched_curr(rq);
 }
