@@ -26,7 +26,7 @@
 
 /*
  * Approximate:
- *   val * y^n,    where y^32 ~= 0.5 (~1 scheduling period)
+ *   val * y^n,    where y^16 ~= 0.5 (~1 scheduling period)
  */
 static u64 decay_load(u64 val, u64 n, bool fast)
 {
@@ -170,9 +170,9 @@ accumulate_sum(u64 delta, struct sched_avg *sa,
  *   u_0 + u_1*y + u_2*y^2 + u_3*y^3 + ...
  *
  * We choose y based on the with of a reasonably scheduling period, fixing:
- *   y^32 = 0.5
+ *   y^16 = 0.5
  *
- * This means that the contribution to load ~32ms ago (u_32) will be weighted
+ * This means that the contribution to load ~16ms ago (u_16) will be weighted
  * approximately half as much as the contribution to load within the last ms
  * (u_0).
  *

@@ -137,6 +137,10 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 	if (cass_cmp(b->util, a->util))
 		goto done;
 
+	/* Prefer the CPU that is idle (only relevant for uclamped tasks) */
+	if (cass_cmp(!!a->exit_lat, !!b->exit_lat))
+		goto done;
+
 	/* Prefer shallower idle state (lower exit latency) */
 	if (a->exit_lat && b->exit_lat &&
 	    cass_cmp(b->exit_lat, a->exit_lat))
@@ -199,7 +203,7 @@ done:
  * Pack a small task onto the lowest-capacity active CPU that has spare cap
  */
 static int cass_find_packing_cpu(struct task_struct *p, int prev_cpu,
-				 unsigned long p_util)
+				 unsigned long p_util, unsigned long uc_min)
 {
 	const struct cpumask *allowed_mask = p->cpus_ptr;
 	int cpu, packing_cpu = -1;
@@ -207,6 +211,10 @@ static int cass_find_packing_cpu(struct task_struct *p, int prev_cpu,
 
 	/* Don't pack large tasks */
 	if (p_util >= CASS_IDLE_ENOUGH_THRES * SCHED_CAPACITY_SCALE / 100)
+		return -1;
+
+	/* Don't pack uclamp-boosted tasks */
+	if (uc_min > 1)
 		return -1;
 
 	/* Find the lowest-capacity active CPU with spare capacity */
@@ -225,7 +233,7 @@ static int cass_find_packing_cpu(struct task_struct *p, int prev_cpu,
 		/* Get available capacity after thermal pressure */
 		cpu_cap_orig = capacity_orig_of(cpu);
 		cpu_cap = cpu_cap_orig - thermal_load_avg(cpu_rq(cpu));
-		if (cpu_cap < p_util)
+		if (cpu_cap < p_util + uc_min)
 			continue;
 
 		/* Prefer lowest original capacity for energy efficiency */
@@ -244,19 +252,20 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	/* Initialize @best such that @best always has a valid CPU at the end */
 	struct cass_cpu_cand cands[2], *best = cands;
 	int this_cpu = raw_smp_processor_id();
-	unsigned long p_util;
+	unsigned long p_util, uc_min;
 	bool has_idle = false;
 	int cidx = 0, cpu;
 
-	 /*
-	 * Get the utilization for this task. Note that RT tasks don't have
-	 * per-entity load tracking.
+	/*
+	 * Get the utilization and uclamp minimum threshold for this task. Note
+	 * that RT tasks don't have per-entity load tracking.
 	 */
 	p_util = rt ? 0 : task_util_est(p);
+	uc_min = uclamp_eff_value(p, UCLAMP_MIN);
 
 	/* Attempt cluster packing for energy efficiency on lightly loaded systems */
 	if (!rt) {
-		int pack_cpu = cass_find_packing_cpu(p, prev_cpu, p_util);
+		int pack_cpu = cass_find_packing_cpu(p, prev_cpu, p_util, uc_min);
 		if (pack_cpu >= 0)
 			return pack_cpu;
 	}
@@ -288,6 +297,10 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		else
 			curr->therm_press = curr->cap_orig - curr->cap_max;
 
+		/* Prefer the CPU that more closely meets the uclamp minimum */
+		if (curr->cap_max < uc_min && curr->cap_max < best->cap_max)
+			continue;
+
 		/*
 		 * Check if this CPU is idle or only has SCHED_IDLE tasks. For
 		 * sync wakes, treat the current CPU as idle if @current is the
@@ -298,10 +311,14 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		    choose_idle_cpu(cpu, p)) {
 			/*
 			 * A non-idle candidate may be better for energy
-			 * efficiency when the only idle candidate found so far
-			 * is the prime CPU. Otherwise, prefer idle candidates.
+			 * efficiency when @p is uclamp boosted above @curr's
+			 * minimum capacity, or when the only idle candidate
+			 * found so far is the prime CPU. Otherwise, prefer idle
+			 * candidates.
 			 */
-			if (!has_idle && !cass_prime_cpu(curr)) {
+			if (!has_idle &&
+			    uc_min <= arch_scale_min_freq_capacity(cpu) &&
+			    !cass_prime_cpu(curr)) {
 				/* Discard any previous non-idle candidate */
 				best = curr;
 				has_idle = true;
@@ -341,7 +358,11 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		 * overloaded, since the relative utilization calculation
 		 * disregards thermal pressure.
 		 */
-		curr->eff_util = curr->util + curr->hard_util;
+		curr->eff_util = max(curr->util + curr->hard_util, uc_min);
+
+		/* Clamp the utilization to the minimum performance threshold */
+		if (curr->util < uc_min)
+			curr->util = uc_min;
 
 		/*
 		 * Calculate the relative utilization for this CPU candidate

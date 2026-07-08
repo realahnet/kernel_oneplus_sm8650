@@ -1539,7 +1539,6 @@ static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
 #endif
 
 extern void update_rq_avg_idle(struct rq *rq);
-extern void fie_update_rq_clock(struct rq *rq);
 extern void update_rq_clock(struct rq *rq);
 
 /*
