@@ -23,6 +23,7 @@
 #include <linux/sched/task.h>
 #include <linux/sched/task_stack.h>
 #include <linux/sched/cputime.h>
+#include <linux/sched/rt.h>
 #include <linux/seq_file.h>
 #include <linux/rtmutex.h>
 #include <linux/init.h>
@@ -2400,7 +2401,10 @@ static __latent_entropy struct task_struct *copy_process(
 	memset(&p->rss_stat, 0, sizeof(p->rss_stat));
 #endif
 
-	p->default_timer_slack_ns = current->timer_slack_ns;
+	if (task_is_realtime(current))
+		p->default_timer_slack_ns = current->default_timer_slack_ns;
+	else
+		p->default_timer_slack_ns = current->timer_slack_ns;
 
 #ifdef CONFIG_PSI
 	p->psi_flags = 0;
@@ -2892,11 +2896,11 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 	/* Boost CPUs to the max for 50 ms when userspace launches an app */
 	if (task_is_zygote(current) && kp_active_mode() != 1) {
 		if (kp_active_mode() == 3) {
-			qcom_dcvs_bus_boost_kick_max(50);
-			cpu_boost_max(50);
+			qcom_dcvs_bus_boost_kick_max(250);
+			cpu_boost_max(250);
 		} else {
-			qcom_dcvs_bus_boost_kick(25);
-			cpu_boost_kick(25);
+			qcom_dcvs_bus_boost_kick(250);
+			cpu_boost_kick(250);
 		}
 	}
 

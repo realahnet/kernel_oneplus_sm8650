@@ -25,6 +25,11 @@
 #include "trace.h"
 
 static DEFINE_IDA(gadget_id_numbers);
+/*
+ * ANDROID: Global lock used instead of a per-gadget lock to maintain KABI
+ * compatibility. Serializes state changes during gadget teardown.
+ */
+static DEFINE_SPINLOCK(android_udc_state_lock);
 
 static struct bus_type gadget_bus_type;
 
@@ -1085,7 +1090,18 @@ EXPORT_SYMBOL_GPL(usb_gadget_check_config);
 static void usb_gadget_state_work(struct work_struct *work)
 {
 	struct usb_gadget *gadget = work_to_gadget(work);
-	struct usb_udc *udc = gadget->udc;
+	struct usb_udc *udc;
+	unsigned long flags;
+
+	/*
+	 * ANDROID: Serialize gadget->udc read with teardown. If teardown has already
+	 * nullified the pointer, skip notification. If the read occurs before
+	 * teardown, flush_work() in usb_del_gadget() ensures this work
+	 * completes before the UDC memory is freed.
+	 */
+	spin_lock_irqsave(&android_udc_state_lock, flags);
+	udc = gadget->udc;
+	spin_unlock_irqrestore(&android_udc_state_lock, flags);
 
 	if (udc)
 		sysfs_notify(&udc->dev.kobj, NULL, "state");
@@ -1096,11 +1112,15 @@ void usb_gadget_set_state(struct usb_gadget *gadget,
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&gadget->state_lock, flags);
+	spin_lock_irqsave(&android_udc_state_lock, flags);
 	gadget->state = state;
-	if (!gadget->teardown)
+	/*
+	 * ANDROID: Check if the gadget is undergoing teardown (gadget->udc is NULL)
+	 * to prevent scheduling new work after cleanup has commenced.
+	 */
+	if (gadget->udc)
 		schedule_work(&gadget->work);
-	spin_unlock_irqrestore(&gadget->state_lock, flags);
+	spin_unlock_irqrestore(&android_udc_state_lock, flags);
 	trace_usb_gadget_set_state(gadget, 0);
 }
 EXPORT_SYMBOL_GPL(usb_gadget_set_state);
@@ -1144,12 +1164,20 @@ static void vbus_event_work(struct work_struct *work)
  */
 void usb_udc_vbus_handler(struct usb_gadget *gadget, bool status)
 {
-	struct usb_udc *udc = gadget->udc;
+	struct usb_udc *udc;
+	unsigned long flags;
 
+	/*
+	 * ANDROID: Protect gadget->udc read to ensure the UDC structure is not
+	 * freed concurrently during teardown.
+	 */
+	spin_lock_irqsave(&android_udc_state_lock, flags);
+	udc = gadget->udc;
 	if (udc) {
 		udc->vbus = status;
 		schedule_work(&udc->vbus_work);
 	}
+	spin_unlock_irqrestore(&android_udc_state_lock, flags);
 }
 EXPORT_SYMBOL_GPL(usb_udc_vbus_handler);
 
@@ -1334,8 +1362,6 @@ static void usb_udc_nop_release(struct device *dev)
 void usb_initialize_gadget(struct device *parent, struct usb_gadget *gadget,
 		void (*release)(struct device *dev))
 {
-	spin_lock_init(&gadget->state_lock);
-	gadget->teardown = false;
 	INIT_WORK(&gadget->work, usb_gadget_state_work);
 	gadget->dev.parent = parent;
 
@@ -1525,12 +1551,12 @@ void usb_del_gadget(struct usb_gadget *gadget)
 	sysfs_remove_link(&udc->dev.kobj, "gadget");
 	device_del(&gadget->dev);
 	/*
-	 * Set the teardown flag before flushing the work to prevent new work
-	 * from being scheduled while we are cleaning up.
+	 * ANDROID: Clear gadget->udc (acting as teardown flag) before flushing the work
+	 * to prevent new work from being scheduled while we are cleaning up.
 	 */
-	spin_lock_irqsave(&gadget->state_lock, flags);
-	gadget->teardown = true;
-	spin_unlock_irqrestore(&gadget->state_lock, flags);
+	spin_lock_irqsave(&android_udc_state_lock, flags);
+	gadget->udc = NULL;
+	spin_unlock_irqrestore(&android_udc_state_lock, flags);
 	flush_work(&gadget->work);
 	ida_free(&gadget_id_numbers, gadget->id_number);
 	cancel_work_sync(&udc->vbus_work);
