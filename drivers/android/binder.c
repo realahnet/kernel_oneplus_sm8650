@@ -3439,6 +3439,15 @@ static void binder_transaction(struct binder_proc *proc,
 			goto err_invalid_target_handle;
 		}
 		trace_android_vh_binder_trans(target_proc, proc, thread, tr);
+
+		if (!(tr->flags & TF_ONE_WAY) &&
+		    thread->task == proc->tsk &&
+		    READ_ONCE(proc->tsk->signal->oom_score_adj) == 0 &&
+		    kp_active_mode() != 1) {
+			qcom_dcvs_bus_boost_kick(100);
+			cpu_boost_kick(100);
+		}
+
 		if (security_binder_transaction(proc->cred,
 						target_proc->cred) < 0) {
 			binder_txn_error("%d:%d transaction credentials failed\n",
