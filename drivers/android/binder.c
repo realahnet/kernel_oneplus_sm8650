@@ -86,6 +86,19 @@
 
 extern int kp_active_mode(void);
 
+#define CRITICAL_OOM_SCORE_ADJ	(-900)
+
+static __always_inline bool task_is_critical(void)
+{
+	if (current->flags & PF_KTHREAD)
+		return false;
+
+	if (unlikely(!current->signal))
+		return false;
+
+	return READ_ONCE(current->signal->oom_score_adj) <= CRITICAL_OOM_SCORE_ADJ;
+}
+
 static HLIST_HEAD(binder_deferred_list);
 static DEFINE_MUTEX(binder_deferred_lock);
 
@@ -663,6 +676,10 @@ static void binder_wakeup_thread_ilocked(struct binder_proc *proc,
 {
 	assert_spin_locked(&proc->inner_lock);
 
+	/* Force sync wakeup when the sender is a critical task */
+	if (task_is_critical())
+		sync = true;
+
 	if (thread) {
 		trace_android_vh_binder_wakeup_ilocked(thread->task, sync, proc);
 		if (sync)
@@ -898,7 +915,8 @@ static void binder_transaction_priority(struct binder_thread *thread,
 	if (skip)
 		return;
 
-	if (!node->inherit_rt && is_rt_policy(desired.sched_policy)) {
+	if (!task_is_critical() &&
+	    !node->inherit_rt && is_rt_policy(desired.sched_policy)) {
 		desired.prio = NICE_TO_PRIO(0);
 		desired.sched_policy = SCHED_NORMAL;
 	}
@@ -937,7 +955,10 @@ static void binder_transaction_priority(struct binder_thread *thread,
 	}
 	spin_unlock(&thread->prio_lock);
 
-	binder_set_priority(thread, &desired);
+	if (task_is_critical())
+		binder_do_set_priority(thread, &desired, false);
+	else
+		binder_set_priority(thread, &desired);
 	trace_android_vh_binder_set_priority(t, task);
 }
 
