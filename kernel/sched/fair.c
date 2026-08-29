@@ -58,6 +58,10 @@
 #include "autogroup.h"
 
 #include <trace/hooks/sched.h>
+#include <trace/hooks/dtask.h>
+
+#include <linux/cpu_boost.h>
+#include <linux/sched_task_critical.h>
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
 
@@ -5772,12 +5776,12 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 #ifdef CONFIG_CFS_BANDWIDTH
 		if (throttled_hierarchy(cfs_rq)) {
 			struct rq *rq = rq_of(cfs_rq);
-
 			list_del_leaf_cfs_rq(cfs_rq);
 			cfs_rq->throttled_clock_pelt = rq_clock_pelt(rq);
 			cfs_rq->pelt_clock_throttled = 1;
 		}
 #endif
+
 	}
 
 	return true;
@@ -5894,6 +5898,13 @@ entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 	 * validating it and just reschedule.
 	 */
 	if (queued) {
+		bool skip_preempt = false;
+
+		trace_android_vh_resched_curr_lazy(rq_of(cfs_rq), &skip_preempt);
+
+		if (skip_preempt)
+			return;
+
 		resched_curr(rq_of(cfs_rq));
 		return;
 	}
@@ -9103,6 +9114,16 @@ update:
 	return;
 
 preempt:
+	{
+		bool skip = sched_task_critical(rq->curr) && !sched_task_critical(p) &&
+			    !cpu_boost_active(cpu_of(rq));
+
+		trace_android_vh_resched_curr_lazy(rq_of(cfs_rq), &skip);
+		if (skip) {
+			set_tsk_lazy_resched(rq->curr);
+			return;
+		}
+	}
 	cancel_protect_slice(se);
 
 	if (preempt_action == PREEMPT_WAKEUP_SHORT)

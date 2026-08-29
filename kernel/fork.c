@@ -95,7 +95,6 @@
 #include <linux/thread_info.h>
 #include <linux/stackleak.h>
 #include <linux/kasan.h>
-#include <linux/randomize_kstack.h>
 #include <linux/scs.h>
 #include <linux/io_uring.h>
 #include <linux/bpf.h>
@@ -120,6 +119,7 @@
 #undef CREATE_TRACE_POINTS
 #include <trace/hooks/sched.h>
 #include <trace/hooks/mm.h>
+#include <trace/hooks/dtask.h>
 /*
  * Minimum number of threads to boot the kernel
  */
@@ -1115,6 +1115,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	setup_thread_stack(tsk, orig);
 	clear_user_return_notifier(tsk);
 	clear_tsk_need_resched(tsk);
+	clear_tsk_lazy_resched(tsk);
 	set_task_stack_end_magic(tsk);
 	clear_syscall_work_syscall_user_dispatch(tsk);
 
@@ -2506,7 +2507,6 @@ static __latent_entropy struct task_struct *copy_process(
 	if (retval)
 		goto bad_fork_cleanup_io;
 
-	random_kstack_task_init(p);
 	stackleak_task_init(p);
 
 	if (pid != &init_struct_pid) {
@@ -2732,6 +2732,7 @@ static __latent_entropy struct task_struct *copy_process(
 	trace_task_newtask(p, clone_flags);
 	uprobe_copy_process(p, clone_flags);
 
+	trace_android_vh_lock_task_fork(p);
 	copy_oom_score_adj(clone_flags, p);
 
 	return p;

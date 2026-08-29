@@ -6712,12 +6712,18 @@ static void __sched notrace __schedule(int sched_mode)
 	struct rq_flags rf;
 	struct rq *rq;
 	int cpu;
+	bool skip_schedule = false;
 
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
 	prev = rq->curr;
 
 	schedule_debug(prev, preempt);
+
+	trace_android_vh_lock_delay_schedule(prev, sched_mode, &skip_schedule);
+
+	if (skip_schedule)
+		return;
 
 	if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
 		hrtick_clear(rq);
@@ -6796,6 +6802,7 @@ static void __sched notrace __schedule(int sched_mode)
 picked:
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
+	clear_tsk_lazy_resched(prev);
 #ifdef CONFIG_SCHED_DEBUG
 	rq->last_seen_need_resched_ns = 0;
 #endif

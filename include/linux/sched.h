@@ -1511,10 +1511,6 @@ struct task_struct {
 	unsigned long			prev_lowest_stack;
 #endif
 
-#ifdef CONFIG_RANDOMIZE_KSTACK_OFFSET
-	u32				kstack_offset;
-#endif
-
 #ifdef CONFIG_X86_MCE
 	void __user			*mce_vaddr;
 	__u64				mce_kflags;
@@ -2096,6 +2092,21 @@ static inline void clear_tsk_need_resched(struct task_struct *tsk)
 static inline int test_tsk_need_resched(struct task_struct *tsk)
 {
 	return unlikely(test_tsk_thread_flag(tsk,TIF_NEED_RESCHED));
+}
+
+static inline void set_tsk_lazy_resched(struct task_struct *tsk)
+{
+	set_tsk_thread_flag(tsk, TIF_LAZY_RESCHED);
+}
+
+static inline void clear_tsk_lazy_resched(struct task_struct *tsk)
+{
+	clear_tsk_thread_flag(tsk, TIF_LAZY_RESCHED);
+}
+
+static inline int test_tsk_lazy_resched(struct task_struct *tsk)
+{
+	return unlikely(test_tsk_thread_flag(tsk, TIF_LAZY_RESCHED));
 }
 
 /*

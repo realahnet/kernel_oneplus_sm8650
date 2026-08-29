@@ -14,7 +14,6 @@
 #include <linux/average.h>
 #include <linux/bitops.h>
 #include <linux/compiler.h>
-#include <linux/completion.h>
 #include <linux/if.h>
 #include <linux/if_ether.h>
 #include <linux/kref.h>
@@ -1403,20 +1402,14 @@ struct batadv_tp_vars {
 	/** @role: receiver/sender modi */
 	enum batadv_tp_meter_role role;
 
-	/**
-	 * @send_result: 0 when sending is ongoing and otherwise
-	 * enum batadv_tp_meter_reason
-	 */
-	atomic_t send_result;
+	/** @sending: sending binary semaphore: 1 if sending, 0 is not */
+	atomic_t sending;
 
-	/** @receiving: receiving binary semaphore: 1 if receiving, 0 is not */
-	atomic_t receiving;
+	/** @reason: reason for a stopped session */
+	enum batadv_tp_meter_reason reason;
 
 	/** @finish_work: work item for the finishing procedure */
 	struct delayed_work finish_work;
-
-	/** @finished: completion signaled when a sender thread exits */
-	struct completion finished;
 
 	/** @test_length: test length in milliseconds */
 	u32 test_length;

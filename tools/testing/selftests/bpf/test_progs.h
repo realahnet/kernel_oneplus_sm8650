@@ -384,6 +384,7 @@ int test__join_cgroup(const char *path);
 	      ___fd, errno);						\
 	___ok;								\
 })
+
 #define SYS(goto_label, fmt, ...)					\
 	({								\
 		char cmd[1024];						\

@@ -8,6 +8,7 @@
 #define pr_fmt(fmt) "damon-reclaim: " fmt
 
 #include <linux/damon.h>
+#include <linux/kstrtox.h>
 #include <linux/ioport.h>
 #include <linux/module.h>
 #include <linux/sched.h>
@@ -100,6 +101,15 @@ module_param(monitor_region_start, ulong, 0600);
 static unsigned long monitor_region_end __read_mostly;
 module_param(monitor_region_end, ulong, 0600);
 
+/*
+ * PID of the DAMON thread
+ *
+ * If DAMON_RECLAIM is enabled, this becomes the PID of the worker thread.
+ * Else, -1.
+ */
+static int kdamond_pid __read_mostly = -1;
+module_param(kdamond_pid, int, 0400);
+
 static struct damos_stat damon_reclaim_stat;
 DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_reclaim_stat,
 		reclaim_tried_regions, reclaimed_regions, quota_exceeds);
@@ -175,103 +185,59 @@ static int damon_reclaim_turn(bool on)
 {
 	int err;
 
-	if (!on)
-		return damon_stop(&ctx, 1);
+	if (!on) {
+		err = damon_stop(&ctx, 1);
+		if (!err)
+			kdamond_pid = -1;
+		return err;
+	}
 
 	err = damon_reclaim_apply_parameters();
 	if (err)
 		return err;
 
-	return damon_start(&ctx, 1, true);
+	err = damon_start(&ctx, 1, true);
+	if (err)
+		return err;
+	kdamond_pid = ctx->kdamond->pid;
+	return 0;
 }
-
-static bool damon_reclaim_enabled(void)
-{
-	if (!ctx)
-		return false;
-	return damon_is_running(ctx);
-}
-
-static struct delayed_work damon_reclaim_timer;
-static void damon_reclaim_timer_fn(struct work_struct *work)
-{
-	bool now_enabled;
-
-	now_enabled = enabled;
-	if (damon_reclaim_enabled() != now_enabled)
-		return;
-	damon_reclaim_turn(now_enabled);
-}
-static DECLARE_DELAYED_WORK(damon_reclaim_timer, damon_reclaim_timer_fn);
-
-static bool damon_reclaim_initialized;
 
 static int damon_reclaim_enabled_store(const char *val,
 		const struct kernel_param *kp)
 {
-	int rc = param_set_bool(val, kp);
+	bool is_enabled = enabled;
+	bool enable;
+	int err;
 
-	if (rc < 0)
-		return rc;
+	err = kstrtobool(val, &enable);
+	if (err)
+		return err;
 
-	/* system_wq might not initialized yet */
-	if (!damon_reclaim_initialized)
-		return rc;
+	if (is_enabled == enable)
+		return 0;
 
-	schedule_delayed_work(&damon_reclaim_timer, 0);
-	return 0;
-}
+	/* Called before init function.  The function will handle this. */
+	if (!ctx)
+		goto set_param_out;
 
-static int damon_reclaim_enabled_load(char *buffer,
-		const struct kernel_param *kp)
-{
-	return sprintf(buffer, "%c\n", damon_reclaim_enabled() ? 'Y' : 'N');
+	err = damon_reclaim_turn(enable);
+	if (err)
+		return err;
+
+set_param_out:
+	enabled = enable;
+	return err;
 }
 
 static const struct kernel_param_ops enabled_param_ops = {
 	.set = damon_reclaim_enabled_store,
-	.get = damon_reclaim_enabled_load,
+	.get = param_get_bool,
 };
 
 module_param_cb(enabled, &enabled_param_ops, &enabled, 0600);
 MODULE_PARM_DESC(enabled,
 	"Enable or disable DAMON_RECLAIM (default: disabled)");
-
-static int damon_reclaim_kdamond_pid_store(const char *val,
-		const struct kernel_param *kp)
-{
-	/*
-	 * kdamond_pid is read-only, but kernel command line could write it.
-	 * Do nothing here.
-	 */
-	return 0;
-}
-
-static int damon_reclaim_kdamond_pid_load(char *buffer,
-		const struct kernel_param *kp)
-{
-	int kdamond_pid = -1;
-
-	if (ctx) {
-		kdamond_pid = damon_kdamond_pid(ctx);
-		if (kdamond_pid < 0)
-			kdamond_pid = -1;
-	}
-	return sprintf(buffer, "%d\n", kdamond_pid);
-}
-
-static const struct kernel_param_ops kdamond_pid_param_ops = {
-	.set = damon_reclaim_kdamond_pid_store,
-	.get = damon_reclaim_kdamond_pid_load,
-};
-
-/*
- * PID of the DAMON thread
- *
- * If DAMON_RECLAIM is enabled, this becomes the PID of the worker thread.
- * Else, -1.
- */
-module_param_cb(kdamond_pid, &kdamond_pid_param_ops, NULL, 0400);
 
 static int damon_reclaim_handle_commit_inputs(void)
 {
@@ -303,29 +269,19 @@ static int damon_reclaim_after_wmarks_check(struct damon_ctx *c)
 
 static int __init damon_reclaim_init(void)
 {
-	ctx = damon_new_ctx();
-	if (!ctx)
-		return -ENOMEM;
+	int err = damon_modules_new_paddr_ctx_target(&ctx, &target);
 
-	if (damon_select_ops(ctx, DAMON_OPS_PADDR)) {
-		damon_destroy_ctx(ctx);
-		return -EINVAL;
-	}
+	if (err)
+		return err;
 
 	ctx->callback.after_wmarks_check = damon_reclaim_after_wmarks_check;
 	ctx->callback.after_aggregation = damon_reclaim_after_aggregation;
 
-	target = damon_new_target();
-	if (!target) {
-		damon_destroy_ctx(ctx);
-		return -ENOMEM;
-	}
-	damon_add_target(ctx, target);
+	/* 'enabled' has set before this function, probably via command line */
+	if (enabled)
+		err = damon_reclaim_turn(true);
 
-	schedule_delayed_work(&damon_reclaim_timer, 0);
-
-	damon_reclaim_initialized = true;
-	return 0;
+	return err;
 }
 
 module_init(damon_reclaim_init);
